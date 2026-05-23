@@ -1,0 +1,8 @@
+ext {
+    extName = 'Capibara Traductor Hub'
+    extClass = '.CapibaraHub'
+    extVersionCode = 5
+    isNsfw = false
+}
+
+apply plugin: "kei.plugins.extension.legacy"
