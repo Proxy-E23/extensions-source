@@ -37,7 +37,7 @@ class CapibaraHub :
     private val apiUrl = "https://capibaratraductor.com"
 
     override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .rateLimitHost(apiUrl.toHttpUrl(), 3)
+        .rateLimitHost(apiUrl.toHttpUrl(), 1, 2, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
