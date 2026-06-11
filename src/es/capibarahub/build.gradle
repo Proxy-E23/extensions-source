@@ -1,7 +1,7 @@
 ext {
     extName = 'Capibara Traductor'
     extClass = '.CapibaraHub'
-    extVersionCode = 6
+    extVersionCode = 7
     isNsfw = false
 }
 

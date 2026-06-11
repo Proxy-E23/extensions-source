@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.interceptor.rateLimitHost
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -29,15 +28,18 @@ class CapibaraHub :
     HttpSource(),
     ConfigurableSource {
 
-    override val name = "Capibara Traductor Hub"
+    override val name = "Capibara Traductor"
     override val baseUrl = "https://capibaratraductor.com"
     override val lang = "es"
     override val supportsLatest = true
 
     private val apiUrl = "https://capibaratraductor.com"
 
-    override val client: OkHttpClient = network.cloudflareClient.newBuilder()
-        .rateLimitHost(apiUrl.toHttpUrl(), 1, 2, java.util.concurrent.TimeUnit.SECONDS)
+    override val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .dispatcher(okhttp3.Dispatcher().apply { maxRequestsPerHost = 2 })
         .build()
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
