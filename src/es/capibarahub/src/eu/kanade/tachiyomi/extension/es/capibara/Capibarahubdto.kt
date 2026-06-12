@@ -1,7 +1,22 @@
 package eu.kanade.tachiyomi.extension.es.capibarahub
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+
+object FlexibleIdSerializer : KSerializer<String> {
+    override val descriptor = PrimitiveSerialDescriptor("FlexibleId", PrimitiveKind.STRING)
+    override fun serialize(encoder: Encoder, value: String) = encoder.encodeString(value)
+    override fun deserialize(decoder: Decoder): String = try {
+        decoder.decodeInt().toString()
+    } catch (e: Exception) {
+        decoder.decodeString()
+    }
+}
 
 // ── /api/manga-custom (lista paginada del hub) ───────────────────────────────
 @Serializable
@@ -20,15 +35,16 @@ data class MangaListData(
 // ── Item individual de la lista (y también del detalle con chapters completos) ─
 @Serializable
 data class MangaItemDto(
-    val id: Int, // mangaCustomId (id dentro del fansub)
-    val mangaId: Int = 0, // id global del manga
+    @Serializable(with = FlexibleIdSerializer::class)
+    val id: String,
+    val mangaId: Int = 0,
     val organizationId: Int = 0,
     val title: String,
     val shortDescription: String? = null,
     val description: String? = null,
     val imageUrl: String? = null,
     val bannerUrl: String? = null,
-    val status: String? = null, // "ongoing" | "completed" | "finished"
+    val status: String? = null,
     val isNSFW: Boolean = false,
     val manga: MangaGlobalDto,
     val organization: OrganizationDto,
