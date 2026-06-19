@@ -14,6 +14,10 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import keiyoushi.utils.parseAs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -35,18 +39,37 @@ class CapibaraHub :
 
     private val apiUrl = "https://capibaratraductor.com"
 
+    @Volatile
+    private var lastRequestTime = 0L
+
+    private val rateLimitInterceptor = okhttp3.Interceptor { chain ->
+        synchronized(this) {
+            val now = System.currentTimeMillis()
+            val wait = (lastRequestTime + RATE_LIMIT_MS) - now
+            if (wait > 0) Thread.sleep(wait)
+            lastRequestTime = System.currentTimeMillis()
+        }
+        chain.proceed(chain.request())
+    }
+
     override val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .dispatcher(okhttp3.Dispatcher().apply { maxRequestsPerHost = 2 })
+        .addInterceptor(rateLimitInterceptor)
         .build()
+
+    override fun headersBuilder() = super.headersBuilder()
+        .add("Referer", "$baseUrl/")
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
         timeZone = java.util.TimeZone.getTimeZone("UTC")
     }
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // ── Preferencias ─────────────────────────────────────────────────────────
     private val preferences: SharedPreferences by lazy {
@@ -122,37 +145,99 @@ class CapibaraHub :
             .addQueryParameter("page", page.toString())
             .addQueryParameter("limit", PAGE_LIMIT.toString())
 
+        var requestHeaders = headersBuilder()
+
         if (query.isNotBlank()) {
             url.addQueryParameter("title", query)
         } else {
             filters.forEach { filter ->
                 when (filter) {
                     is SortByFilter -> url.addQueryParameter("order", filter.toUriPart())
+                    is ScanlatorFilter -> if (filter.state != 0) requestHeaders["x-organization"] = filter.toUriPart()
                     else -> {}
                 }
             }
         }
 
-        return GET(url.build(), headers)
+        return GET(url.build(), requestHeaders.build())
     }
 
     override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
 
     // ── Filtros de búsqueda ───────────────────────────────────────────────────
-    override fun getFilterList() = FilterList(
-        SortByFilter(
-            "Ordenar por",
-            arrayOf(
-                Pair("Popularidad", "popular"),
-                Pair("Recientes", "latest"),
+    override fun getFilterList(): FilterList {
+        fetchScanList()
+
+        val filters = mutableListOf<Filter<*>>(
+            SortByFilter(
+                "Ordenar por",
+                arrayOf(
+                    Pair("Popularidad", "popular"),
+                    Pair("Recientes", "latest"),
+                ),
             ),
-        ),
-    )
+        )
+
+        if (scanList.isEmpty()) {
+            filters.add(Filter.Header("Presione 'Restablecer' para intentar cargar la lista de fansubs"))
+        } else {
+            filters.add(ScanlatorFilter("Fansub", scanList))
+        }
+
+        return FilterList(filters)
+    }
 
     class SortByFilter(title: String, vals: Array<Pair<String, String>>) : UriPartFilter(title, vals)
 
+    class ScanlatorFilter(title: String, vals: Array<Pair<String, String>>) : UriPartFilter(title, vals)
+
     open class UriPartFilter(name: String, val vals: Array<Pair<String, String>>) : Filter.Select<String>(name, vals.map { it.first }.toTypedArray()) {
         fun toUriPart() = vals[state].second
+    }
+
+    private var scanList = emptyArray<Pair<String, String>>()
+    private var fetchScansAttempts = 0
+    private var scansState = FiltersState.NOT_FETCHED
+
+    private enum class FiltersState { NOT_FETCHED, FETCHING, FETCHED }
+
+    private fun fetchScanList() {
+        if (scansState != FiltersState.NOT_FETCHED || fetchScansAttempts >= 3) {
+            return
+        }
+
+        scansState = FiltersState.FETCHING
+        fetchScansAttempts++
+
+        scope.launch {
+            try {
+                val scans = mutableListOf("Todos" to "")
+                var page = 1
+
+                while (true) {
+                    val url = "$apiUrl/api/landing/scans".toHttpUrl().newBuilder()
+                        .addQueryParameter("page", page.toString())
+                        .addQueryParameter("sort", "name")
+                        .addQueryParameter("limit", "100")
+                        .build()
+
+                    val result = client.newCall(GET(url, headers))
+                        .execute()
+                        .parseAs<ScanListResponse>()
+                        .data
+
+                    scans += result.items.map { it.name to it.id }
+
+                    if (page >= result.maxPage) break
+                    page++
+                }
+
+                scanList = scans.toTypedArray()
+                scansState = FiltersState.FETCHED
+            } catch (_: Exception) {
+                scansState = FiltersState.NOT_FETCHED
+            }
+        }
     }
 
     // ── Detalle del manga ─────────────────────────────────────────────────────
@@ -343,6 +428,7 @@ class CapibaraHub :
 
     companion object {
         private const val PAGE_LIMIT = 36
+        private const val RATE_LIMIT_MS = 350L
         private const val PREF_NSFW_MODE = "nsfw_mode"
         private const val NSFW_HIDE = "hide"
         private const val NSFW_SHOW_ALL = "show_all"

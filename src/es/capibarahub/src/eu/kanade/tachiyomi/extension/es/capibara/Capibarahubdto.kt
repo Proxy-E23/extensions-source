@@ -162,3 +162,23 @@ data class JointOrgDto(
     val name: String,
     val slug: String,
 )
+
+// ── /api/landing/scans (catálogo de fansubs, para el filtro) ─────────────────
+@Serializable
+data class ScanListResponse(
+    val status: Boolean,
+    val data: ScanListDto,
+)
+
+@Serializable
+data class ScanListDto(
+    val items: List<ScanDto> = emptyList(),
+    val page: Int = 1,
+    val maxPage: Int = 1,
+)
+
+@Serializable
+data class ScanDto(
+    val id: String,
+    val name: String,
+)
