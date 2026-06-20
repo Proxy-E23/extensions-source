@@ -199,6 +199,10 @@ class CapibaraHub :
     private var fetchScansAttempts = 0
     private var scansState = FiltersState.NOT_FETCHED
 
+    init {
+        fetchScanList()
+    }
+
     private enum class FiltersState { NOT_FETCHED, FETCHING, FETCHED }
 
     private fun fetchScanList() {
