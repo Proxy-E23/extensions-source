@@ -49,20 +49,19 @@ def extract_extension_lib(version: str) -> str:
     raise ValueError(f"Version {version} doesn't contain MAJOR.MINOR")
 
 index = index_pb2.Index(
-    name = "Keiyoushi",
-    badgeLabel = "KEI",
-    signingKey = "9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2",
+    name = "Proxy-E23",
+    badgeLabel = "P23",
+    signingKey = "c74d97288b0fa6507c579183574fe4cfcc13fb6a5d45e6175bfb39f95e232472",
     contact=index_pb2.Contact(
-        website="https://keiyoushi.github.io",
-        discord="https://discord.gg/3FbCpdKbdY"
+        website="https://github.com/Proxy-E23/extensions-source",
     ),
     extensions=[
         index_pb2.Extension(
             name=extension["name"].replace("Tachiyomi: ", ""),
             packageName=extension["pkg"],
             resources=index_pb2.Resources(
-                apkUrl=f"https://raw.githubusercontent.com/keiyoushi/extensions/refs/heads/repo/apk/{extension["apk"]}",
-                iconUrl=f"https://raw.githubusercontent.com/keiyoushi/extensions/refs/heads/repo/icon/{extension["pkg"]}.png",
+                apkUrl=f"https://raw.githubusercontent.com/Proxy-E23/M-Repo/refs/heads/repo/apk/{extension["apk"]}",
+                iconUrl=f"https://raw.githubusercontent.com/Proxy-E23/M-Repo/refs/heads/repo/icon/{extension["pkg"]}.png",
             ),
             extensionLib=extract_extension_lib(extension["version"]),
             versionCode=extension["code"],
