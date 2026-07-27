@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - beta
     paths:
       - '**'
       - '!**.md'
@@ -114,10 +115,10 @@ jobs:
           java-version: 17
           distribution: temurin
 
-      - name: Checkout main branch
+      - name: Checkout source branch
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
           path: main
           persist-credentials: false
 
@@ -130,12 +131,21 @@ jobs:
           java -jar ./Inspector.jar "repo/apk" "output.json" "tmp"
           python ./.github/scripts/create-repo.py
 
+      - name: Set target repo branch
+        id: target
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "branch=repo" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=beta-repo" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repo branch
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: Proxy-E23/M-Repo
           token: ${{ secrets.BOT_PAT }}
-          ref: repo
+          ref: ${{ steps.target.outputs.branch }}
           path: repo
           persist-credentials: true
 
