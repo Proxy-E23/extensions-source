@@ -30,13 +30,10 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 @Source
-class CapibaraHub :
+abstract class CapibaraHub :
     HttpSource(),
     ConfigurableSource {
 
-    override val name = "Capibara Traductor"
-    override val baseUrl = "https://capibaratraductor.com"
-    override val lang = "es"
     override val supportsLatest = true
 
     private val apiUrl = "https://capibaratraductor.com"
