@@ -129,7 +129,7 @@ all_extensions.sort(key=lambda ext: ext.packageName)
 index = index_pb2.Index(
     name="Proxy-E23",
     badgeLabel="P23",
-    signingKey="c74d97288b0fa6507c579183574fe4cfcc13fb6a5d45e6175bfb39f95e232472",
+    signingKey="c74d97288b0fa6507c5791835744fecfcc13fb6a5d45e6175bfb39f95e232472",
     contact=index_pb2.Contact(
         website="https://github.com/Proxy-E23/extensions-source",
     ),
