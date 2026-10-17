@@ -1,10 +1,7 @@
 package eu.kanade.tachiyomi.extension.es.capibarahub
 
-import android.app.Application
-import android.content.SharedPreferences
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -12,69 +9,47 @@ import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import keiyoushi.annotation.Source
+import keiyoushi.network.get
+import keiyoushi.network.rateLimit
+import keiyoushi.source.KeiSource
+import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
+import keiyoushi.utils.toJsonElement
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.TimeZone
+import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
 
 @Source
 abstract class CapibaraHub :
-    HttpSource(),
+    KeiSource(),
     ConfigurableSource {
-
-    override val supportsLatest = true
 
     private val apiUrl = "https://capibaratraductor.com"
 
-    @Volatile
-    private var lastRequestTime = 0L
-
-    private val rateLimitInterceptor = okhttp3.Interceptor { chain ->
-        synchronized(this) {
-            val now = System.currentTimeMillis()
-            val wait = (lastRequestTime + RATE_LIMIT_MS) - now
-            if (wait > 0) Thread.sleep(wait)
-            lastRequestTime = System.currentTimeMillis()
-        }
-        chain.proceed(chain.request())
-    }
-
-    override val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .callTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .dispatcher(okhttp3.Dispatcher().apply { maxRequestsPerHost = 2 })
-        .addInterceptor(rateLimitInterceptor)
-        .build()
-
-    override fun headersBuilder() = super.headersBuilder()
-        .add("Referer", "$baseUrl/")
-
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-        timeZone = java.util.TimeZone.getTimeZone("UTC")
-    }
-
     private val json = Json { ignoreUnknownKeys = true }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val preferences by getPreferencesLazy()
+
+    override fun OkHttpClient.Builder.configureClient() = connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+        .rateLimit(1, RATE_LIMIT_PERIOD)
+
+    private fun orgHeaders(orgSlug: String): Headers = headers.newBuilder()
+        .set("x-organization", orgSlug)
+        .build()
 
     // ── Preferencias ─────────────────────────────────────────────────────────
-    private val preferences: SharedPreferences by lazy {
-        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
-    }
-
     private val nsfwMode: String
         get() = preferences.getString(PREF_NSFW_MODE, NSFW_HIDE)!!
 
@@ -121,30 +96,26 @@ abstract class CapibaraHub :
         }
     }
 
-    // ── Lista popular ─────────────────────────────────────────────────────────
-    override fun popularMangaRequest(page: Int): Request = GET("$apiUrl/api/manga-custom?page=$page&limit=$PAGE_LIMIT&order=popular", headers)
+    // ── Popular / Últimas ─────────────────────────────────────────────────────
+    override suspend fun getPopularManga(page: Int): MangasPage = parseMangaList(
+        "$apiUrl/api/manga-custom?page=$page&limit=$PAGE_LIMIT&order=popular".toHttpUrl(),
+        page,
+        headers,
+    )
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val result = response.parseAs<MangaListResponse>()
-        val mangas = result.data.items
-            .filter { filterNsfw(it.isNSFW || it.organization.isNSFW) }
-            .map { it.toSManga() }
-        val hasNext = extractPage(response) < result.data.maxPage
-        return MangasPage(mangas, hasNext)
-    }
-
-    // ── Últimas actualizaciones ───────────────────────────────────────────────
-    override fun latestUpdatesRequest(page: Int): Request = GET("$apiUrl/api/manga-custom?page=$page&limit=$PAGE_LIMIT&order=latest", headers)
-
-    override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
+    override suspend fun getLatestUpdates(page: Int): MangasPage = parseMangaList(
+        "$apiUrl/api/manga-custom?page=$page&limit=$PAGE_LIMIT&order=latest".toHttpUrl(),
+        page,
+        headers,
+    )
 
     // ── Búsqueda ──────────────────────────────────────────────────────────────
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val url = "$apiUrl/api/manga-custom".toHttpUrl().newBuilder()
             .addQueryParameter("page", page.toString())
             .addQueryParameter("limit", PAGE_LIMIT.toString())
 
-        var requestHeaders = headersBuilder()
+        val requestHeaders = headers.newBuilder()
 
         if (query.isNotBlank()) {
             url.addQueryParameter("title", query)
@@ -158,15 +129,60 @@ abstract class CapibaraHub :
             }
         }
 
-        return GET(url.build(), requestHeaders.build())
+        return parseMangaList(url.build(), page, requestHeaders.build())
     }
 
-    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
+    private suspend fun parseMangaList(url: HttpUrl, page: Int, requestHeaders: Headers): MangasPage {
+        val result = client.get(url, requestHeaders).parseAs<MangaListResponse>(json)
+        val mangas = result.data.items
+            .filter { filterNsfw(it.isNSFW || it.organization.isNSFW) }
+            .map { it.toSManga() }
+        return MangasPage(mangas, page < result.data.maxPage)
+    }
 
     // ── Filtros de búsqueda ───────────────────────────────────────────────────
-    override fun getFilterList(): FilterList {
-        fetchScanList()
+    override val supportsFilterFetching get() = true
 
+    override suspend fun fetchFilterData(): JsonElement {
+        val sfwScans = fetchAllScans(includeNsfw = false)
+        val nsfwScans = fetchAllScans(includeNsfw = true)
+
+        return buildList {
+            add("Todos" to "")
+            addAll(
+                (sfwScans + nsfwScans)
+                    .distinctBy { it.second }
+                    .sortedBy { it.first },
+            )
+        }.toJsonElement()
+    }
+
+    private suspend fun fetchAllScans(includeNsfw: Boolean): List<Pair<String, String>> {
+        val scans = mutableListOf<Pair<String, String>>()
+        var page = 1
+
+        while (true) {
+            val url = "$apiUrl/api/landing/scans".toHttpUrl().newBuilder()
+                .addQueryParameter("page", page.toString())
+                .addQueryParameter("sort", "name")
+                .addQueryParameter("limit", "100")
+                .apply { if (includeNsfw) addQueryParameter("includeNSFW", "true") }
+                .build()
+
+            val result = client.get(url, headers)
+                .parseAs<ScanListResponse>(json)
+                .data
+
+            scans += result.items.map { it.name to it.id }
+
+            if (page >= result.maxPage) break
+            page++
+        }
+
+        return scans
+    }
+
+    override fun getFilterList(data: JsonElement?): FilterList {
         val filters = mutableListOf<Filter<*>>(
             SortByFilter(
                 "Ordenar por",
@@ -177,10 +193,8 @@ abstract class CapibaraHub :
             ),
         )
 
-        if (scanList.isEmpty()) {
-            filters.add(Filter.Header("Presione 'Restablecer' para intentar cargar la lista de fansubs"))
-        } else {
-            filters.add(ScanlatorFilter("Fansub", scanList))
+        data?.parseAs<List<Pair<String, String>>>()?.also {
+            filters.add(ScanlatorFilter("Fansub", it.toTypedArray()))
         }
 
         return FilterList(filters)
@@ -194,176 +208,81 @@ abstract class CapibaraHub :
         fun toUriPart() = vals[state].second
     }
 
-    private var scanList = emptyArray<Pair<String, String>>()
-    private var fetchScansAttempts = 0
-    private var scansState = FiltersState.NOT_FETCHED
-
-    init {
-        fetchScanList()
-    }
-
-    private enum class FiltersState { NOT_FETCHED, FETCHING, FETCHED }
-
-    private fun fetchScanList() {
-        if (scansState != FiltersState.NOT_FETCHED || fetchScansAttempts >= 3) {
-            return
-        }
-
-        scansState = FiltersState.FETCHING
-        fetchScansAttempts++
-
-        scope.launch {
-            try {
-                val scans = mutableListOf("Todos" to "")
-                var page = 1
-
-                while (true) {
-                    val url = "$apiUrl/api/landing/scans".toHttpUrl().newBuilder()
-                        .addQueryParameter("page", page.toString())
-                        .addQueryParameter("sort", "name")
-                        .addQueryParameter("limit", "100")
-                        .build()
-
-                    val result = client.newCall(GET(url, headers))
-                        .execute()
-                        .parseAs<ScanListResponse>()
-                        .data
-
-                    scans += result.items.map { it.name to it.id }
-
-                    if (page >= result.maxPage) break
-                    page++
-                }
-
-                scanList = scans.toTypedArray()
-                scansState = FiltersState.FETCHED
-            } catch (_: Exception) {
-                scansState = FiltersState.NOT_FETCHED
-            }
-        }
-    }
-
-    // ── Detalle del manga ─────────────────────────────────────────────────────
-    override fun mangaDetailsRequest(manga: SManga): Request {
+    // ── Detalle + capítulos ───────────────────────────────────────────────────
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
         val parts = manga.url.split("/")
         val mangaSlug = parts[0]
         val orgSlug = parts[1]
-        return if (orgSlug == "joint") {
-            GET("$apiUrl/api/joint/$mangaSlug", headers)
-        } else {
-            val headersWithOrg = headersBuilder()
-                .add("x-organization", orgSlug)
-                .build()
-            GET("$apiUrl/api/manga-custom/$mangaSlug", headersWithOrg)
-        }
-    }
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val body = response.body.string()
-        return if (response.request.url.pathSegments.contains("joint")) {
-            json.decodeFromString<JointDetailResponse>(body).data.toSManga()
-        } else {
-            val item = json.decodeFromString<MangaDetailResponse>(body).data
-            // Si tiene jointSlug, actualizar url a formato joint para que las páginas funcionen
-            if (item.jointSlug != null) {
-                item.toSMangaAsJoint()
-            } else {
-                item.toSMangaDetails()
+        if (orgSlug == "joint") {
+            val item = client.get("$apiUrl/api/joint/$mangaSlug", headers)
+                .parseAs<JointDetailResponse>(json)
+                .data
+
+            val chapterList = item.chapters
+                .filter { it.isReleased() }
+                .map { it.toSChapter("${item.slug}/joint/${item.id}/${it.number}") }
+
+            return SMangaUpdate(item.toSManga(), chapterList)
+        }
+
+        val item = client.get("$apiUrl/api/manga-custom/$mangaSlug", orgHeaders(orgSlug))
+            .parseAs<MangaDetailResponse>(json)
+            .data
+
+        // Si tiene jointSlug, actualizar url a formato joint para que las páginas funcionen
+        val isJoint = item.jointSlug != null
+        val details = if (isJoint) item.toSMangaAsJoint() else item.toSManga()
+
+        val chapterList = item.chapters
+            .filter { it.isReleased() }
+            .map { chapter ->
+                val chapterUrl = if (isJoint) {
+                    "${item.manga.slug}/joint/${item.id}/${chapter.number}"
+                } else {
+                    "${item.manga.slug}/${item.organization.slug}/${item.id}/${chapter.number}"
+                }
+                chapter.toSChapter(chapterUrl)
             }
-        }
-    }
 
-    // ── Lista de capítulos ────────────────────────────────────────────────────
-    override fun chapterListRequest(manga: SManga): Request = mangaDetailsRequest(manga)
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val body = response.body.string()
-        return if (response.request.url.pathSegments.contains("joint")) {
-            val item = json.decodeFromString<JointDetailResponse>(body).data
-            item.chapters
-                .filter {
-                    !it.isUnreleased &&
-                        it.releasedAt != null &&
-                        (runCatching { dateFormat.parse(it.releasedAt)?.time ?: 0L }.getOrNull() ?: 0L) <= System.currentTimeMillis()
-                }
-                .map { chapter ->
-                    SChapter.create().apply {
-                        url = "${item.slug}/joint/${item.id}/${chapter.number}"
-                        name = buildString {
-                            append("Cap. ${formatNumber(chapter.number)}")
-                            if (!chapter.title.isNullOrBlank()) append(" - ${chapter.title}")
-                        }
-                        date_upload = chapter.releasedAt?.let {
-                            runCatching { dateFormat.parse(it)?.time }.getOrNull() ?: 0L
-                        } ?: 0L
-                        chapter_number = chapter.number
-                    }
-                }
-        } else {
-            val result = json.decodeFromString<MangaDetailResponse>(body)
-            val item = result.data
-            val orgSlug = item.organization.slug
-            val mangaSlug = item.manga.slug
-            val isJoint = item.jointSlug != null
-            item.chapters
-                .filter {
-                    !it.isUnreleased &&
-                        it.releasedAt != null &&
-                        (runCatching { dateFormat.parse(it.releasedAt)?.time ?: 0L }.getOrNull() ?: 0L) <= System.currentTimeMillis()
-                }
-                .map { chapter ->
-                    SChapter.create().apply {
-                        url = if (isJoint) {
-                            "$mangaSlug/joint/${item.id}/${chapter.number}"
-                        } else {
-                            "$mangaSlug/$orgSlug/${item.id}/${chapter.number}"
-                        }
-                        name = buildString {
-                            append("Cap. ${formatNumber(chapter.number)}")
-                            if (!chapter.title.isNullOrBlank()) append(" - ${chapter.title}")
-                        }
-                        date_upload = chapter.releasedAt?.let {
-                            runCatching { dateFormat.parse(it)?.time }.getOrNull() ?: 0L
-                        } ?: 0L
-                        chapter_number = chapter.number
-                    }
-                }
-        }
+        return SMangaUpdate(details, chapterList)
     }
 
     // ── Páginas del capítulo ──────────────────────────────────────────────────
-    override fun pageListRequest(chapter: SChapter): Request {
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
         val parts = chapter.url.split("/")
         val mangaSlug = parts[0]
         val orgSlug = parts[1]
         val chapterNumber = parts[3]
-        return if (orgSlug == "joint") {
-            GET("$apiUrl/api/joint/$mangaSlug/chapter/$chapterNumber/pages", headers)
-        } else {
-            val headersWithOrg = headersBuilder()
-                .add("x-organization", orgSlug)
-                .build()
-            GET("$apiUrl/api/manga-custom/$mangaSlug/chapter/$chapterNumber/pages", headersWithOrg)
-        }
-    }
 
-    override fun pageListParse(response: Response): List<Page> {
-        val body = response.body.string()
-        val error = runCatching {
-            json.decodeFromString<ApiErrorResponse>(body)
-        }.getOrNull()
+        val response = if (orgSlug == "joint") {
+            client.get("$apiUrl/api/joint/$mangaSlug/chapter/$chapterNumber/pages", headers, ensureSuccess = false)
+        } else {
+            client.get("$apiUrl/api/manga-custom/$mangaSlug/chapter/$chapterNumber/pages", orgHeaders(orgSlug), ensureSuccess = false)
+        }
+
+        val code = response.code
+        val body = response.use { it.body.string() }
+
+        val error = runCatching { body.parseAs<ApiErrorResponse>(json) }.getOrNull()
 
         if (error != null && !error.status) {
             throw Exception(error.message ?: "Error al cargar páginas")
         }
+        if (error == null && code !in 200..299) {
+            throw Exception("HTTP $code")
+        }
 
-        val result = json.decodeFromString<PagesResponse>(body)
+        val result = body.parseAs<PagesResponse>(json)
         return result.data.mapIndexed { i, page ->
             Page(i, imageUrl = page.resolvedUrl)
         }
     }
-
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -373,9 +292,28 @@ abstract class CapibaraHub :
         else -> !isNsfw
     }
 
-    private fun extractPage(response: Response): Int = response.request.url.queryParameter("page")?.toIntOrNull() ?: 1
+    private fun parseDate(date: String): Long = runCatching {
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.parse(date)?.time
+    }.getOrNull() ?: 0L
+
+    private fun ChapterSummaryDto.isReleased(): Boolean {
+        val released = releasedAt ?: return false
+        return !isUnreleased && parseDate(released) <= System.currentTimeMillis()
+    }
 
     private fun formatNumber(n: Float): String = if (n == n.toLong().toFloat()) n.toLong().toString() else n.toString()
+
+    private fun ChapterSummaryDto.toSChapter(chapterUrl: String) = SChapter.create().apply {
+        url = chapterUrl
+        name = buildString {
+            append("Cap. ${formatNumber(number)}")
+            if (!title.isNullOrBlank()) append(" - $title")
+        }
+        date_upload = releasedAt?.let { parseDate(it) } ?: 0L
+        chapter_number = number
+    }
 
     // SManga.url normal = mangaGlobalSlug/orgSlug/mangaCustomId
     private fun MangaItemDto.toSManga() = SManga.create().apply {
@@ -399,8 +337,6 @@ abstract class CapibaraHub :
             else -> SManga.UNKNOWN
         }
     }
-
-    private fun MangaItemDto.toSMangaDetails() = toSManga()
 
     // Cuando manga-custom tiene jointSlug, actualizar url a formato joint
     private fun MangaItemDto.toSMangaAsJoint() = toSManga().apply {
@@ -431,7 +367,7 @@ abstract class CapibaraHub :
 
     companion object {
         private const val PAGE_LIMIT = 36
-        private const val RATE_LIMIT_MS = 350L
+        private val RATE_LIMIT_PERIOD = 350.milliseconds
         private const val PREF_NSFW_MODE = "nsfw_mode"
         private const val NSFW_HIDE = "hide"
         private const val NSFW_SHOW_ALL = "show_all"

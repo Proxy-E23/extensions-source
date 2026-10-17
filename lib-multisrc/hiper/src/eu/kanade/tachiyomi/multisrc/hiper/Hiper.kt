@@ -11,10 +11,10 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.model.SMangaUpdate
-import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.lib.i18n.Intl
 import keiyoushi.network.get
 import keiyoushi.source.KeiSource
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.get
 import keiyoushi.utils.getLongOrNull
 import keiyoushi.utils.getPreferencesLazy
@@ -252,7 +252,12 @@ abstract class Hiper :
         val response = client.get(url)
         val element = response.parseAs<List<JsonElement>>().last()
         val chaptersDTO = element["result"]["data"]["json"]!!.parseAs<List<ChapterDto>>()
-        return chaptersDTO.map { it.toSChapter(manga.url) }
+
+        // Make chapter url unique only when needed
+        val seen = mutableSetOf<Float>()
+        return chaptersDTO.map {
+            it.toSChapter(manga.url, !seen.add(it.number))
+        }
     }
 
     // ============================ Manga updates =============================
@@ -304,6 +309,7 @@ abstract class Hiper :
                 putJsonObject("json") {
                     put("seriesSlug", slug)
                     put("chapterNumber", chapter.getNumber())
+                    chapter.memo["chapterId"]?.let { put("chapterId", it) }
                 }
             }
             putJsonObject("3") {
