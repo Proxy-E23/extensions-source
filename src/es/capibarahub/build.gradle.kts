@@ -6,7 +6,7 @@ plugins {
 
 keiyoushi {
     name = "Capibara Traductor"
-    versionCode = 13
+    versionCode = 14
     contentWarning = ContentWarning.MIXED
     libVersion = "1.6"
     source {

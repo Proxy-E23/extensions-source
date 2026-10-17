@@ -279,12 +279,16 @@ abstract class CapibaraHub :
         }
 
         val result = body.parseAs<PagesResponse>(json)
-        return result.data.mapIndexed { i, page ->
-            Page(i, imageUrl = page.resolvedUrl)
-        }
+        return result.data
+            .map { it.resolvedUrl }
+            .filter { it.isNotBlank() && !isNoticePage(it) }
+            .mapIndexed { i, url -> Page(i, imageUrl = url) }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Descarta las páginas de aviso que la API inyecta en los capítulos
+    private fun isNoticePage(url: String): Boolean = NOTICE_MARKERS.any { url.contains(it, ignoreCase = true) }
 
     private fun filterNsfw(isNsfw: Boolean): Boolean = when (nsfwMode) {
         NSFW_ONLY -> isNsfw
@@ -367,6 +371,7 @@ abstract class CapibaraHub :
 
     companion object {
         private const val PAGE_LIMIT = 36
+        private val NOTICE_MARKERS = listOf("/promo/aviso/")
         private val RATE_LIMIT_PERIOD = 350.milliseconds
         private const val PREF_NSFW_MODE = "nsfw_mode"
         private const val NSFW_HIDE = "hide"
